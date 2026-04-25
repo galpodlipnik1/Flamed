@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flamed",
+  "version": "0.1.0",
+  "identifier": "com.Flamed.flamed",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "settings",
+        "title": "Flamed Settings",
+        "url": "index.html?window=settings",
+        "width": 520,
+        "height": 640,
+        "resizable": false,
+        "decorations": true,
+        "visible": true
+      },
+      {
+        "label": "overlay",
+        "title": "Flamed",
+        "url": "index.html?window=overlay",
+        "width": 1280,
+        "height": 180,
+        "resizable": false,
+        "decorations": false,
+        "visible": true,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "skipTaskbar": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' http://localhost:1420; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": ["resources/death_sound.mp3"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine",
+        "languages": ["English"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY3QUQzN0Y4QzcyRTZBMjIKUldRaWFpN0grRGV0OTA2QmNwbWR6VnE4aUJnSjcwdmhwZ3NuVFN0QVZHNkcreUE3VWNFMlFITFQK",
+      "endpoints": [
+        "https://github.com/galpodlipnik1/Flamed/releases/latest/download/latest.json"
+      ],
+      "createUpdaterArtifacts": true
+    }
+  }
+}
