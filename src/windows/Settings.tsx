@@ -523,7 +523,7 @@ export function Settings() {
           <Separator />
 
           <CardFooter className="items-center justify-between px-6 py-5">
-            <span className="text-xs text-muted-foreground">v1.0.0</span>
+            <span className="text-xs text-muted-foreground">v1.0.1</span>
 
             <Button onClick={handleSave} disabled={saving || loading}>
               {saving ? (

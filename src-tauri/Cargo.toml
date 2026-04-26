@@ -1,6 +1,6 @@
 [package]
 name = "flamed"
-version = "0.1.0"
+version = "1.0.1"
 description = "Flamed is a league of legends overlay that bullys you"
 authors = ["Flamed"]
 edition = "2021"
