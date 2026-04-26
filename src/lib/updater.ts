@@ -5,13 +5,14 @@ export async function checkForUpdates(): Promise<void> {
 
   try {
     update = await check();
-  } catch { 
+  } catch (error) {
+    console.warn('Update check failed', error);
     return;
   }
 
   if (!update) return;
 
-  const confirmed = window.confirm(`Flamed  {${update.version} is available.\n\n${update.body ?? 'Bug fixes and improvements.'}\n\nInstall now? The app will restart.`);
+  const confirmed = window.confirm(`Flamed ${update.version} is available.\n\n${update.body ?? 'Bug fixes and improvements.'}\n\nInstall now? The app will restart.`);
 
   if (!confirmed) return;
 
