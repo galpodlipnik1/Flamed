@@ -1,12 +1,17 @@
-import { Settings } from "@/lib/tauri";
+import { type LolDeathPayload, Settings } from "@/lib/tauri";
 import { create } from "zustand";
+
+export type DeathRecord = LolDeathPayload & { timestamp: number };
 
 type AppState = {
   settings: Settings;
   gameConnected: boolean;
+  deaths: DeathRecord[];
   setSettings: (settings: Settings) => void;
   patchSettings: (settings: Partial<Settings>) => void;
   setGameConnected: (connected: boolean) => void;
+  addDeath: (death: DeathRecord) => void;
+  clearDeaths: () => void;
 };
 
 export const defaultSettings: Settings = {
@@ -24,6 +29,7 @@ export const defaultSettings: Settings = {
 export const useAppStore = create<AppState>((set) => ({
   settings: defaultSettings,
   gameConnected: false,
+  deaths: [],
   setSettings: (settings) => set({ settings }),
   patchSettings: (patch) =>
     set((state) => ({
@@ -33,4 +39,9 @@ export const useAppStore = create<AppState>((set) => ({
       }
     })),
   setGameConnected: (connected) => set({ gameConnected: connected }),
+  addDeath: (death) =>
+    set((state) => ({
+      deaths: [...state.deaths, death].slice(-50),
+    })),
+  clearDeaths: () => set({ deaths: [] }),
 }))

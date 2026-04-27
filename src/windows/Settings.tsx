@@ -16,6 +16,7 @@ import { Switch } from '@/components/ui/switch';
 import {
     clearProviderApiKey,
     loadSettings,
+    onLolDeath,
     onLolStatus,
     providerOptions,
     saveSettings,
@@ -25,7 +26,9 @@ import {
     type InsultPreset,
     type ProviderOption,
 } from '@/lib/tauri';
-import { checkForUpdates } from '@/lib/updater';
+import { DeathHistory } from '@/components/DeathHistory';
+import { UpdateDialog } from '@/components/UpdateDialog';
+import { checkForUpdates, type Update } from '@/lib/updater';
 import { useAppStore } from '@/store/useAppStore';
 import { CheckCircle2, Loader2, Save, TestTube2, Volume2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -39,7 +42,8 @@ const INSULT_PRESETS: { value: InsultPreset; label: string }[] = [
 ];
 
 export function Settings() {
-  const { settings, setSettings, patchSettings, gameConnected, setGameConnected } = useAppStore();
+  const { settings, setSettings, patchSettings, gameConnected, setGameConnected, deaths, addDeath, clearDeaths } = useAppStore();
+  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
   const [loading, setLoading] = useState(true);
   const [testingSavedKey, setTestingSavedKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -101,6 +105,18 @@ export function Settings() {
   }, [setGameConnected, setSettings]);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    onLolDeath((payload) => {
+      addDeath({ ...payload, timestamp: Date.now() });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => unlisten?.();
+  }, [addDeath]);
+
+  useEffect(() => {
     if (loadedOnce && !speechAvailable && settings.speech_enabled) {
       patchSettings({ speech_enabled: false });
     }
@@ -117,7 +133,9 @@ export function Settings() {
   }, [loadedOnce, settings]);
 
   useEffect(() => {
-    checkForUpdates().catch(() => { });
+    checkForUpdates()
+      .then((update) => { if (update) setPendingUpdate(update); })
+      .catch(() => {});
   }, []);
 
   async function handleSave() {
@@ -194,6 +212,9 @@ export function Settings() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
+      {pendingUpdate && (
+        <UpdateDialog update={pendingUpdate} onDismiss={() => setPendingUpdate(null)} />
+      )}
       <div className="mx-auto flex min-h-screen w-full max-w-140 flex-col p-4">
         <Card className="flex min-h-[calc(100vh-2rem)] flex-col rounded-lg border border-border bg-card shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <CardHeader className="gap-0 border-b border-border px-6 py-5">
@@ -506,6 +527,8 @@ export function Settings() {
                   </div>
                 </section>
 
+                <DeathHistory deaths={deaths} onClear={clearDeaths} />
+
                 <section className="rounded-md border border-primary/20 bg-primary/5 p-4">
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="mt-0.5 size-4 text-primary" aria-hidden="true" />
@@ -523,7 +546,7 @@ export function Settings() {
           <Separator />
 
           <CardFooter className="items-center justify-between px-6 py-5">
-            <span className="text-xs text-muted-foreground">v1.0.2</span>
+            <span className="text-xs text-muted-foreground">v1.0.3</span>
 
             <Button onClick={handleSave} disabled={saving || loading}>
               {saving ? (

@@ -1,6 +1,6 @@
 [package]
 name = "flamed"
-version = "1.0.2"
+version = "1.0.3"
 description = "Flamed is a league of legends overlay that bullys you"
 authors = ["Flamed"]
 edition = "2021"
@@ -38,3 +38,4 @@ windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_UI_Window
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"

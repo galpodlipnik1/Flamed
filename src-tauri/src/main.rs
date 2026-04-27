@@ -11,11 +11,15 @@ mod speech;
 use error::AppError;
 use secrets::{KeyringSecretStore, SecretStore};
 use settings::{AiProvider, LoadSettingsResult, Settings, SettingsState, UiSettings};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, State, WebviewWindow, WindowEvent,
 };
+use tauri_plugin_notification::NotificationExt;
+
+static TRAY_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 async fn load_settings(
@@ -285,6 +289,7 @@ fn install_overlay_hit_test(window: &WebviewWindow) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
             let secrets = KeyringSecretStore;
@@ -317,6 +322,16 @@ fn main() {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+
+                    if !TRAY_HINT_SHOWN.swap(true, Ordering::Relaxed) {
+                        let _ = window
+                            .app_handle()
+                            .notification()
+                            .builder()
+                            .title("Flamed is still running")
+                            .body("Right-click the tray icon to quit.")
+                            .show();
+                    }
                 }
             }
         })

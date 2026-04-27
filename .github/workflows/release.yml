@@ -47,3 +47,78 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+
+      - name: Find installer
+        id: installer
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem "src-tauri/target/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
+          "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload to VirusTotal
+        id: vt
+        shell: pwsh
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+        run: |
+          $file = Get-Item "${{ steps.installer.outputs.path }}"
+          Write-Host "Uploading $($file.Name) ($([math]::Round($file.Length / 1MB, 1)) MB)..."
+
+          $upload = Invoke-RestMethod `
+            -Uri "https://www.virustotal.com/api/v3/files" `
+            -Method POST `
+            -Headers @{ "x-apikey" = $env:VT_API_KEY } `
+            -Form @{ file = $file }
+
+          $id = $upload.data.id
+          Write-Host "Analysis ID: $id — polling for results..."
+
+          $result = $null
+          for ($i = 1; $i -le 20; $i++) {
+            Start-Sleep -Seconds 15
+            $result = Invoke-RestMethod `
+              -Uri "https://www.virustotal.com/api/v3/analyses/$id" `
+              -Headers @{ "x-apikey" = $env:VT_API_KEY }
+            $status = $result.data.attributes.status
+            Write-Host "Poll $i/20: $status"
+            if ($status -eq "completed") { break }
+          }
+
+          $stats  = $result.data.attributes.stats
+          $sha256 = $result.meta.file_info.sha256
+          $bad    = [int]$stats.malicious
+          $total  = [int]$stats.malicious + [int]$stats.suspicious + [int]$stats.undetected + [int]$stats.harmless
+
+          Write-Host "Result: $bad/$total detections — sha256: $sha256"
+
+          "sha256=$sha256"   >> $env:GITHUB_OUTPUT
+          "malicious=$bad"   >> $env:GITHUB_OUTPUT
+          "total=$total"     >> $env:GITHUB_OUTPUT
+
+      - name: Update release notes
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $bad    = [int]"${{ steps.vt.outputs.malicious }}"
+          $total  = [int]"${{ steps.vt.outputs.total }}"
+          $sha256 = "${{ steps.vt.outputs.sha256 }}"
+          $link   = "https://www.virustotal.com/gui/file/$sha256"
+          $badge  = if ($bad -eq 0) { "✅ $bad/$total — No threats detected" } else { "⚠️ $bad/$total — Review recommended" }
+
+          $lines = @(
+            "See assets below to download and install.",
+            "",
+            "---",
+            "",
+            "**VirusTotal scan:** $badge",
+            "[View full report →]($link)"
+          )
+
+          if ($bad -gt 0) {
+            $lines += ""
+            $lines += "> Some antivirus engines may flag MSI installers as a false positive. The full report shows which engines."
+          }
+
+          $lines -join "`n" | Set-Content -Path "release-notes.md" -Encoding UTF8
+          gh release edit "${{ github.ref_name }}" --notes-file "release-notes.md"
