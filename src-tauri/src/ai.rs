@@ -161,9 +161,9 @@ fn preset_instruction(preset: InsultPreset) -> &'static str {
     match preset {
         InsultPreset::Warmup => "L1 warmup: clever jab, real bite, no heavy cruelty.",
         InsultPreset::Salty => "L2 salty: mean, annoyed, mocking; mild profanity if uncensored.",
-        InsultPreset::Brutal => "L3 brutal: harsh gameplay humiliation, contempt, profanity welcome.",
+        InsultPreset::Brutal => "L3 brutal: harsh gameplay humiliation, open contempt; profanity welcome and varied.",
         InsultPreset::Nuclear => {
-            "L4 nuclear: soul-destroying ranked obliteration. The player is the most pathetic waste of bandwidth to ever touch a keyboard. Be clinically contemptuous, vicious, and relentless. If uncensored, mandatory multiple profanities: fuck, fucking, shit, dogshit, pussy, braindead, pathetic. Make them feel like they should uninstall forever."
+            "L4 nuclear: soul-destroying contempt, zero mercy. Be coldly precise and surgical — clinical contempt cuts deeper than screaming. If uncensored, profanity is mandatory — use it naturally and vary it widely, never recycle the same words across insults."
         }
     }
 }
@@ -187,7 +187,7 @@ fn build_roast_prompt(settings: &Settings, request: &RoastRequest<'_>) -> RoastP
     };
 
     let system = format!(
-        "League death roast. JSON only: {{\"roast\":\"...\"}}. One sentence, 8-18 words, <=110 chars. Target: the PLAYER who just died — roast their gameplay, not the killer's. The killer's name is flavor/context only, never the butt of the joke. Attack the player's mechanics, awareness, spacing, ego, usefulness. Avoid coaching, sympathy, positivity, labels, lists, and 'skill issue'. Never use protected-class hate, slurs, threats, self-harm, or doxxing.\nLevel: {}\nStreak: {}\nCensor: {}",
+        "League death roast. JSON only: {{\"roast\":\"...\"}}. One sentence, 8-18 words, <=110 chars. Target: the PLAYER who just died — roast their gameplay, not the killer's. The killer's name is flavor/context only, never the butt of the joke. Roast angle — choose one per insult: positioning, mechanics, game sense, champion mastery, ego gap, decision-making, teamfighting, macro, mental, or cause of death. Vary angle and vocabulary every call. KDA context: 0-1 kills + 3+ deaths = feeding hard; late-game deaths after a lead = throwing. Champion context: ADC dying = positioning, carry dying = decisions, melee dying to poke = awareness gap — use these if they sharpen the roast. Avoid coaching, sympathy, positivity, labels, lists, and 'skill issue'. Never use protected-class hate, slurs, threats, self-harm, or doxxing.\nLevel: {}\nStreak: {}\nCensor: {}",
         level,
         tone_for_streak(request.death_streak),
         censorship_instruction(settings.censorship_enabled)
@@ -403,6 +403,86 @@ fn model_name_for_genai(settings: &Settings) -> String {
     settings.selected_model.clone()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GameResult {
+    Win,
+    Lose,
+}
+
+pub struct GameEndRequest<'a> {
+    pub result: GameResult,
+    pub champion: &'a str,
+    pub kills: u32,
+    pub deaths: u32,
+    pub assists: u32,
+    pub game_time_seconds: f64,
+}
+
+fn build_game_end_prompt(settings: &Settings, request: &GameEndRequest<'_>) -> RoastPrompt {
+    let game_time = format_time(request.game_time_seconds);
+
+    let system = match request.result {
+        GameResult::Win => format!(
+            "League win roast. JSON only: {{\"roast\":\"...\"}}. One sentence, <=120 chars. The player won — write a sarcastic, backhanded congratulation. Be genuinely surprised they pulled it off. Reference their champion and KDA to mock their performance while technically acknowledging the win — a good KDA means they got carried, a bad one means they barely survived. Never be sincere or wholesome. Censor: {}.",
+            censorship_instruction(settings.censorship_enabled)
+        ),
+        GameResult::Lose => format!(
+            "League loss verdict. JSON only: {{\"roast\":\"...\"}}. One sentence, <=120 chars. The player just lost — deliver a brutal final verdict on their overall game, not any single death. Use their champion and KDA to make it specific: many deaths = they inted the game away, few kills = they were useless, both = hopeless. Level: {}. Censor: {}.",
+            preset_instruction(settings.insult_preset),
+            censorship_instruction(settings.censorship_enabled)
+        ),
+    };
+
+    let user = format!(
+        "champion={}; k/d/a={}/{}/{}; time={}. Return JSON.",
+        request.champion, request.kills, request.deaths, request.assists, game_time
+    );
+
+    RoastPrompt { system, user }
+}
+
+pub async fn generate_game_end_message(
+    settings: &Settings,
+    api_key: &str,
+    request: GameEndRequest<'_>,
+) -> AppResult<String> {
+    let api_key = api_key.trim();
+
+    if api_key.is_empty() {
+        return Err(AppError::Ai(format!(
+            "{} API key is not set.",
+            settings.provider.label()
+        )));
+    }
+
+    let client = client_for_provider(settings.provider, api_key.to_string());
+    let model_name = model_name_for_genai(settings);
+    let options = ChatOptions::default()
+        .with_temperature(0.9)
+        .with_max_tokens(200)
+        .with_response_format(ChatResponseFormat::JsonMode)
+        .with_reasoning_effort(ReasoningEffort::None);
+
+    let prompt = build_game_end_prompt(settings, &request);
+    let chat_req = ChatRequest::new(vec![
+        ChatMessage::system(prompt.system),
+        ChatMessage::user(prompt.user),
+    ]);
+
+    let chat_res = client
+        .exec_chat(&model_name, chat_req, Some(&options))
+        .await
+        .map_err(|e| AppError::Ai(e.to_string()))?;
+
+    let text = chat_res
+        .first_text()
+        .ok_or_else(|| AppError::Ai("AI returned no text.".to_string()))?;
+
+    extract_roast_from_response(text)
+        .or_else(|| Some(clean_output(text)).filter(|v| !v.is_empty()))
+        .ok_or_else(|| AppError::Ai("AI returned an unusable game-end message.".to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -462,8 +542,9 @@ mod tests {
         assert!(preset_instruction(InsultPreset::Salty).contains("L2"));
         assert!(preset_instruction(InsultPreset::Brutal).contains("L3"));
         assert!(preset_instruction(InsultPreset::Nuclear).contains("L4"));
-        assert!(preset_instruction(InsultPreset::Nuclear).contains("fuck"));
-        assert!(preset_instruction(InsultPreset::Nuclear).contains("pussy"));
+        assert!(preset_instruction(InsultPreset::Nuclear).contains("soul-destroying"));
+        assert!(preset_instruction(InsultPreset::Nuclear).contains("surgical"));
+        assert!(preset_instruction(InsultPreset::Nuclear).contains("profanity"));
     }
 
     #[test]
@@ -491,7 +572,7 @@ mod tests {
             },
         );
 
-        assert!(prompt.system.len() < 1200);
+        assert!(prompt.system.len() < 1500);
         assert!(prompt.user.len() < 100);
         assert!(prompt.system.contains("JSON only"));
         assert!(prompt.system.contains("protected-class hate"));

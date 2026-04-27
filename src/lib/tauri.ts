@@ -48,6 +48,13 @@ export type LolStatusPayload = {
   message?: string;
 };
 
+export type LolGameEndPayload = {
+  result: 'win' | 'lose';
+  message: string;
+  kda: string;
+  gameTimeSeconds: number;
+};
+
 export function loadSettings() { 
   return invoke<LoadSettingsResult>("load_settings");
 }
@@ -99,8 +106,12 @@ export function onLolDeath(handler: (payload: LolDeathPayload) => void): Promise
   return listen<LolDeathPayload>("lol-death", (event) => handler(event.payload));
 }
 
-export function onLolStatus(handler: (payload: LolStatusPayload) => void): Promise<UnlistenFn> { 
+export function onLolStatus(handler: (payload: LolStatusPayload) => void): Promise<UnlistenFn> {
   return listen<LolStatusPayload>("lol-status", (event) => handler(event.payload));
+}
+
+export function onLolGameEnd(handler: (payload: LolGameEndPayload) => void): Promise<UnlistenFn> {
+  return listen<LolGameEndPayload>("lol-game-end", (event) => handler(event.payload));
 }
 
 export async function showOverlayWindow() { 

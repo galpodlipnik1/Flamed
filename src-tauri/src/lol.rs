@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    ai::{self, RoastRequest},
+    ai::{self, GameEndRequest, GameResult, RoastRequest},
     audio,
     error::{AppError, AppResult},
     secrets::{KeyringSecretStore, SecretStore},
@@ -31,6 +31,8 @@ struct LolEvent {
     victim_name: String,
     #[serde(rename = "KillerName", default)]
     killer_name: String,
+    #[serde(rename = "Result", default)]
+    result: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +86,15 @@ struct DeathPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameEndPayload {
+    result: String,
+    message: String,
+    kda: String,
+    game_time_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct StatusPayload {
     connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +107,7 @@ struct PollState {
     death_streak: u32,
     last_connected: Option<bool>,
     last_game_time: f64,
+    game_ended: bool,
 }
 
 impl Default for PollState {
@@ -106,6 +118,7 @@ impl Default for PollState {
             death_streak: 0,
             last_connected: None,
             last_game_time: 0.0,
+            game_ended: false,
         }
     }
 }
@@ -128,10 +141,16 @@ pub async fn poll_lol(app: AppHandle, settings: SharedSettings) {
             }
             emit_status(&app, &mut state, false, None);
             state.initialized_events = false;
+            state.game_ended = false;
         }
 
         sleep(Duration::from_secs(1)).await;
     }
+}
+
+struct NewEvents {
+    deaths: Vec<LolEvent>,
+    game_end: Option<LolEvent>,
 }
 
 async fn poll_once(
@@ -145,9 +164,9 @@ async fn poll_once(
     let events = get_json::<EventDataResponse>(client, "/liveclientdata/eventdata").await?;
 
     emit_status(app, state, true, None);
-    let deaths = collect_new_player_deaths(state, events.events, &active_player);
+    let new_events = collect_new_events(state, events.events, &active_player);
 
-    for event in deaths {
+    for event in new_events.deaths {
         let snapshot = settings.read().await.clone();
 
         if !snapshot.overlay_enabled {
@@ -162,11 +181,7 @@ async fn poll_once(
         let champion = active_player_champion(&all_game, &active_player);
         let _ = audio::play_death_sound(app, snapshot.volume);
 
-        let killer = if event.killer_name.trim().is_empty() {
-            "unknown enemy".to_string()
-        } else {
-            event.killer_name.clone()
-        };
+        let killer = normalize_killer_name(&event.killer_name);
 
         let secrets = KeyringSecretStore;
         let Some(api_key) = secrets.get_api_key(snapshot.provider)? else {
@@ -225,6 +240,68 @@ async fn poll_once(
         }
     }
 
+    if let Some(game_end_event) = new_events.game_end {
+        if !state.game_ended {
+            state.game_ended = true;
+
+            let snapshot = settings.read().await.clone();
+            let game_result = if game_end_event.result.eq_ignore_ascii_case("win") {
+                GameResult::Win
+            } else {
+                GameResult::Lose
+            };
+
+            let _ = match game_result {
+                GameResult::Win => audio::play_win_sound(app, snapshot.volume),
+                GameResult::Lose => audio::play_lose_sound(app, snapshot.volume),
+            };
+
+            let (champion, kills, deaths, assists, game_time_seconds) =
+                match get_json::<AllGameDataResponse>(client, "/liveclientdata/allgamedata").await {
+                    Ok(all_game) => {
+                        let champ = active_player_champion(&all_game, &active_player);
+                        let (k, d, a) = active_player_scores(&all_game, &active_player);
+                        (champ, k, d, a, all_game.game_data.game_time)
+                    }
+                    Err(_) => ("unknown champion".to_string(), 0, 0, 0, 0.0),
+                };
+
+            let kda = format!("{kills} / {deaths} / {assists}");
+
+            let secrets = KeyringSecretStore;
+            if let Ok(Some(api_key)) = secrets.get_api_key(snapshot.provider) {
+                match ai::generate_game_end_message(
+                    &snapshot,
+                    &api_key,
+                    GameEndRequest {
+                        result: game_result,
+                        champion: &champion,
+                        kills,
+                        deaths,
+                        assists,
+                        game_time_seconds,
+                    },
+                )
+                .await
+                {
+                    Ok(message) => {
+                        let result_str = if game_result == GameResult::Win { "win" } else { "lose" };
+                        let _ = app.emit(
+                            "lol-game-end",
+                            GameEndPayload {
+                                result: result_str.to_string(),
+                                message,
+                                kda,
+                                game_time_seconds,
+                            },
+                        );
+                    }
+                    Err(error) => emit_backend_message(app, true, error.user_message()),
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -259,6 +336,19 @@ fn active_player_kda(
         .unwrap_or_else(|| "0/0/0".to_string())
 }
 
+fn normalize_killer_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        "unknown enemy".to_string()
+    } else if trimmed.starts_with("Turret_") || trimmed.starts_with("Barracks_") {
+        "a turret".to_string()
+    } else if trimmed.starts_with("Minion_") {
+        "a minion".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn active_player_champion(
     all_game: &AllGameDataResponse,
     active_player: &ActivePlayerResponse,
@@ -270,6 +360,18 @@ fn active_player_champion(
         .map(|player| player.champion_name.clone())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "unknown champion".to_string())
+}
+
+fn active_player_scores(
+    all_game: &AllGameDataResponse,
+    active_player: &ActivePlayerResponse,
+) -> (u32, u32, u32) {
+    all_game
+        .all_players
+        .iter()
+        .find(|player| matches_active_player_name(&player.summoner_name, active_player))
+        .map(|p| (p.scores.kills, p.scores.deaths, p.scores.assists))
+        .unwrap_or((0, 0, 0))
 }
 
 fn emit_status(app: &AppHandle, state: &mut PollState, connected: bool, message: Option<String>) {
@@ -328,6 +430,7 @@ impl PollState {
         self.last_event_id = -1;
         self.death_streak = 0;
         self.last_game_time = 0.0;
+        self.game_ended = false;
     }
 
     fn record_death_at_game_time(&mut self, game_time: f64) -> u32 {
@@ -341,11 +444,11 @@ impl PollState {
     }
 }
 
-fn collect_new_player_deaths(
+fn collect_new_events(
     state: &mut PollState,
     events: Vec<LolEvent>,
     active_player: &ActivePlayerResponse,
-) -> Vec<LolEvent> {
+) -> NewEvents {
     let max_event_id = events.iter().map(|event| event.event_id).max().unwrap_or(0);
 
     if state.initialized_events && max_event_id < state.last_event_id {
@@ -355,36 +458,38 @@ fn collect_new_player_deaths(
     if !state.initialized_events {
         state.last_event_id = max_event_id;
         state.initialized_events = true;
-        return Vec::new();
+        return NewEvents { deaths: Vec::new(), game_end: None };
     }
 
-    let mut new_events = events
+    let mut pending = events
         .into_iter()
         .filter(|event| event.event_id > state.last_event_id)
         .collect::<Vec<_>>();
 
-    new_events.sort_by_key(|event| event.event_id);
+    pending.sort_by_key(|event| event.event_id);
 
     let mut deaths = Vec::new();
+    let mut game_end = None;
 
-    for event in new_events {
+    for event in pending {
         state.last_event_id = state.last_event_id.max(event.event_id);
 
         if event.event_name == "ChampionKill"
             && matches_active_player_name(&event.victim_name, active_player)
         {
             deaths.push(event);
+        } else if event.event_name == "GameEnd" {
+            game_end = Some(event);
         }
     }
 
-    deaths
+    NewEvents { deaths, game_end }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_new_player_deaths, matches_active_player_name, ActivePlayerResponse, LolEvent,
-        PollState,
+        collect_new_events, matches_active_player_name, ActivePlayerResponse, LolEvent, PollState,
     };
 
     fn active_player() -> ActivePlayerResponse {
@@ -401,6 +506,7 @@ mod tests {
             event_name: "ChampionKill".to_string(),
             victim_name: victim_name.to_string(),
             killer_name: "Annie Bot".to_string(),
+            result: String::new(),
         }
     }
 
@@ -409,26 +515,26 @@ mod tests {
         let mut state = PollState::default();
         let active_player = active_player();
 
-        let initial = collect_new_player_deaths(
+        let initial = collect_new_events(
             &mut state,
             vec![champion_kill(10, "Flamed")],
             &active_player,
         );
-        assert!(initial.is_empty());
+        assert!(initial.deaths.is_empty());
 
-        let first = collect_new_player_deaths(
+        let first = collect_new_events(
             &mut state,
             vec![champion_kill(10, "Flamed"), champion_kill(11, "Flamed")],
             &active_player,
         );
-        let duplicate = collect_new_player_deaths(
+        let duplicate = collect_new_events(
             &mut state,
             vec![champion_kill(10, "Flamed"), champion_kill(11, "Flamed")],
             &active_player,
         );
 
-        assert_eq!(first.len(), 1);
-        assert!(duplicate.is_empty());
+        assert_eq!(first.deaths.len(), 1);
+        assert!(duplicate.deaths.is_empty());
     }
 
     #[test]
@@ -436,19 +542,15 @@ mod tests {
         let mut state = PollState::default();
         let active_player = active_player();
 
-        collect_new_player_deaths(
-            &mut state,
-            vec![champion_kill(10, "Flamed")],
-            &active_player,
-        );
+        collect_new_events(&mut state, vec![champion_kill(10, "Flamed")], &active_player);
         state.record_death_at_game_time(100.0);
 
-        let deaths =
-            collect_new_player_deaths(&mut state, vec![champion_kill(1, "Flamed")], &active_player);
+        let result =
+            collect_new_events(&mut state, vec![champion_kill(1, "Flamed")], &active_player);
 
         assert_eq!(state.death_streak, 0);
         assert_eq!(state.last_game_time, 0.0);
-        assert_eq!(deaths.len(), 1);
+        assert_eq!(result.deaths.len(), 1);
     }
 
     #[test]
