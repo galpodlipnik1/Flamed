@@ -7,11 +7,14 @@ type AppState = {
   settings: Settings;
   gameConnected: boolean;
   deaths: DeathRecord[];
+  aiError: string | null;
   setSettings: (settings: Settings) => void;
   patchSettings: (settings: Partial<Settings>) => void;
   setGameConnected: (connected: boolean) => void;
   addDeath: (death: DeathRecord) => void;
   clearDeaths: () => void;
+  setAiError: (message: string) => void;
+  clearAiError: () => void;
 };
 
 export const defaultSettings: Settings = {
@@ -30,6 +33,7 @@ export const useAppStore = create<AppState>((set) => ({
   settings: defaultSettings,
   gameConnected: false,
   deaths: [],
+  aiError: null,
   setSettings: (settings) => set({ settings }),
   patchSettings: (patch) =>
     set((state) => ({
@@ -44,4 +48,6 @@ export const useAppStore = create<AppState>((set) => ({
       deaths: [...state.deaths, death].slice(-50),
     })),
   clearDeaths: () => set({ deaths: [] }),
+  setAiError: (message) => set({ aiError: message }),
+  clearAiError: () => set({ aiError: null }),
 }))

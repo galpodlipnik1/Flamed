@@ -150,10 +150,10 @@ fn format_time(seconds: f64) -> String {
 
 fn tone_for_streak(streak: u32) -> &'static str {
     match streak {
-        0 | 1 => "first death: one sharp pointed jab — clean and targeted",
-        2 => "second death: contemptuous and losing patience, make it sting more",
-        3 | 4 => "third or fourth death: openly disgusted, mock their very existence in this game",
-        _ => "five-plus deaths: full meltdown — they have destroyed this game, make them feel completely hopeless",
+        0 | 1 => "1st death this game: one sharp pointed jab — clean and targeted",
+        2 => "2nd death this game: contemptuous and losing patience, make it sting more",
+        3 | 4 => "3rd or 4th death this game: openly disgusted, mock their very existence in this game",
+        _ => "5th+ death this game: full meltdown — they have destroyed this game, make them feel completely hopeless",
     }
 }
 
@@ -187,13 +187,13 @@ fn build_roast_prompt(settings: &Settings, request: &RoastRequest<'_>) -> RoastP
     };
 
     let system = format!(
-        "League death roast. JSON only: {{\"roast\":\"...\"}}. One sentence, 8-18 words, <=110 chars. Target: the PLAYER who just died — roast their gameplay, not the killer's. The killer's name is flavor/context only, never the butt of the joke. Roast angle — choose one per insult: positioning, mechanics, game sense, champion mastery, ego gap, decision-making, teamfighting, macro, mental, or cause of death. Vary angle and vocabulary every call. KDA context: 0-1 kills + 3+ deaths = feeding hard; late-game deaths after a lead = throwing. Champion context: ADC dying = positioning, carry dying = decisions, melee dying to poke = awareness gap — use these if they sharpen the roast. Avoid coaching, sympathy, positivity, labels, lists, and 'skill issue'. Never use protected-class hate, slurs, threats, self-harm, or doxxing.\nLevel: {}\nStreak: {}\nCensor: {}",
+        "League death roast. JSON only: {{\"roast\":\"...\"}}. One sentence, 8-18 words, <=110 chars. Target: the PLAYER who just died — roast their gameplay, not the killer's. The killer's name is flavor/context only, never the butt of the joke. 'deaths' = total times the PLAYER has died this game, NOT how many times the current killer killed them. Roast angle — choose one per insult: positioning, mechanics, game sense, champion mastery, ego gap, decision-making, teamfighting, macro, mental, or cause of death. Vary angle and vocabulary every call. KDA context: 0-1 kills + 3+ deaths = feeding hard; late-game deaths after a lead = throwing. Champion context: ADC dying = positioning, carry dying = decisions, melee dying to poke = awareness gap — use these if they sharpen the roast. Avoid coaching, sympathy, positivity, labels, lists, and 'skill issue'. Never use protected-class hate, slurs, threats, self-harm, or doxxing.\nLevel: {}\nDeath count: {}\nCensor: {}",
         level,
         tone_for_streak(request.death_streak),
         censorship_instruction(settings.censorship_enabled)
     );
     let user = format!(
-        "champion={}; killer={}; kda={}; time={}; streak={}. Return JSON.",
+        "champion={}; killer={}; kda={}; time={}; deaths={}. Return JSON.",
         request.champion,
         request.killer,
         request.kda,
@@ -202,6 +202,29 @@ fn build_roast_prompt(settings: &Settings, request: &RoastRequest<'_>) -> RoastP
     );
 
     RoastPrompt { system, user }
+}
+
+fn is_rate_limit_error(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("quota")
+        || lower.contains("rate_limit")
+        || lower.contains("rate limit")
+        || lower.contains("resource_exhausted")
+        || lower.contains("too_many_requests")
+        || lower.contains("too many requests")
+}
+
+fn ai_error(raw: impl std::fmt::Display, provider: AiProvider) -> AppError {
+    let msg = raw.to_string();
+    if is_rate_limit_error(&msg) {
+        AppError::Ai(format!(
+            "Rate limit hit on {} — you've exceeded the free tier quota. Wait a moment or upgrade your plan.",
+            provider.label()
+        ))
+    } else {
+        AppError::Ai(msg)
+    }
 }
 
 fn clean_output(text: &str) -> String {
@@ -319,7 +342,7 @@ pub async fn generate_insult_with_settings(
         let chat_res = client
             .exec_chat(&model_name, chat_req, Some(&options))
             .await
-            .map_err(|error| AppError::Ai(error.to_string()))?;
+            .map_err(|error| ai_error(error, settings.provider))?;
         let text = chat_res
             .first_text()
             .ok_or_else(|| AppError::Ai("AI provider returned no text.".to_string()))?;
@@ -472,7 +495,7 @@ pub async fn generate_game_end_message(
     let chat_res = client
         .exec_chat(&model_name, chat_req, Some(&options))
         .await
-        .map_err(|e| AppError::Ai(e.to_string()))?;
+        .map_err(|e| ai_error(e, settings.provider))?;
 
     let text = chat_res
         .first_text()
@@ -578,8 +601,11 @@ mod tests {
         assert!(prompt.system.contains("protected-class hate"));
         assert!(prompt.system.contains("soul-destroying"));
         assert!(prompt.system.contains("FEEDING FRENZY"));
+        assert!(prompt.system.contains("'deaths' = total times the PLAYER has died"));
         assert!(prompt.user.contains("champion=Yasuo"));
         assert!(prompt.user.contains("killer=Annie Bot"));
         assert!(prompt.user.contains("time=10:21"));
+        assert!(prompt.user.contains("deaths=5"));
+        assert!(!prompt.user.contains("streak="));
     }
 }

@@ -1,3 +1,4 @@
+import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -30,7 +31,7 @@ import { DeathHistory } from '@/components/DeathHistory';
 import { UpdateDialog } from '@/components/UpdateDialog';
 import { checkForUpdates, type Update } from '@/lib/updater';
 import { useAppStore } from '@/store/useAppStore';
-import { CheckCircle2, Loader2, Save, TestTube2, Volume2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, Save, TestTube2, Volume2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -42,7 +43,7 @@ const INSULT_PRESETS: { value: InsultPreset; label: string }[] = [
 ];
 
 export function Settings() {
-  const { settings, setSettings, patchSettings, gameConnected, setGameConnected, deaths, addDeath, clearDeaths } = useAppStore();
+  const { settings, setSettings, patchSettings, gameConnected, setGameConnected, deaths, addDeath, clearDeaths, aiError, setAiError, clearAiError } = useAppStore();
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
   const [loading, setLoading] = useState(true);
   const [testingSavedKey, setTestingSavedKey] = useState(false);
@@ -88,7 +89,12 @@ export function Settings() {
     onLolStatus((payload) => {
       setGameConnected(payload.connected);
       if (payload.connected && payload.message) {
-        toast.error(payload.message);
+        const msg = payload.message;
+        if (msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('quota')) {
+          setAiError(msg);
+        } else {
+          toast.error(msg);
+        }
       }
     }).then((unlisten) => {
       if (cancelled) {
@@ -244,6 +250,27 @@ export function Settings() {
           </CardHeader>
 
           <CardContent className="flex flex-1 flex-col gap-6 overflow-y-auto px-6 py-6">
+            {aiError && (
+              <Alert variant="destructive">
+                <AlertTriangle aria-hidden="true" />
+                <AlertTitle>AI rate limit exceeded</AlertTitle>
+                <AlertDescription>
+                  {aiError}
+                  <p className="mt-1">Switch to a different model or provider, or wait before the next death.</p>
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    aria-label="Dismiss"
+                    onClick={clearAiError}
+                  >
+                    <X aria-hidden="true" />
+                  </Button>
+                </AlertAction>
+              </Alert>
+            )}
             {loading ? (
               <div className="flex flex-1 items-center justify-center text-muted-foreground">
                 <Loader2 className="mr-2 animate-spin" aria-hidden="true" />
@@ -546,7 +573,7 @@ export function Settings() {
           <Separator />
 
           <CardFooter className="items-center justify-between px-6 py-5">
-            <span className="text-xs text-muted-foreground">v1.0.6</span>
+            <span className="text-xs text-muted-foreground">v1.0.7</span>
 
             <Button onClick={handleSave} disabled={saving || loading}>
               {saving ? (
