@@ -114,10 +114,6 @@ export function Overlay() {
     await hideOverlayWindow();
   }
 
-  if (!death && !gameEnd) {
-    return <div className="h-screen w-screen bg-transparent" />;
-  }
-
   if (gameEnd) {
     const isWin = gameEnd.result === 'win';
     const accent = isWin ? '#f59e0b' : '#ef4444';
@@ -155,6 +151,10 @@ export function Overlay() {
         </section>
       </main>
     );
+  }
+
+  if (!death) {
+    return <div className="h-screen w-screen bg-transparent" />;
   }
 
   return (
